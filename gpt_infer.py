@@ -7,8 +7,8 @@ import pickle
 import tokenizer as tk
 
 # checkpoints
-config_path = "checkpoints/260915_0829/config_s25.pkl"
-tokenizer_path = "checkpoints/260915_0829/tokenizer.pkl"
+config_path = "checkpoints/260915_1352/config_s1280.pkl"
+tokenizer_path = "checkpoints/260915_1352/tokenizer.pkl"
 
 with open(config_path, "rb") as f:
     config = pickle.load(f)

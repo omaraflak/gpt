@@ -1,14 +1,29 @@
-import numpy as np
+import math
 import pickle
-import loader
+import numpy as np
 import matplotlib.pyplot as plt
 
+
+def list_to_xy(values: list[float]) -> tuple[float, float]:
+    x, y = [], []
+    for i, v in enumerate(values):
+        if not math.isnan(v):
+            x.append(i)
+            y.append(v)
+    return x, y
+
+
+def smooth(vals: list[float]):
+    x_vals, y_vals = list_to_xy(vals)
+    nx, ny = [], []
+    for i in range(len(x_vals)):
+        nx.append(x_vals[i])
+        ny.append(np.mean(y_vals[i : i + 5]))
+    return nx, ny
+
+
 paths = [
-    "checkpoints/260914_2311/losses.pkl",
-    "checkpoints/260914_2324/losses.pkl",
-    "checkpoints/260914_2337/losses.pkl",
-    "checkpoints/260914_2359/losses.pkl",
-    "checkpoints/260915_0758/losses.pkl",
+    "checkpoints/260915_1114/losses.pkl",
 ]
 
 train_loss = []
@@ -20,17 +35,7 @@ for path in paths:
         train_loss.extend(losses["train_loss"])
         val_loss.extend(losses["val_loss"])
 
-
-def smooth(vals):
-    x_vals, y_vals = loader.list_to_xy(vals)
-    nx, ny = [], []
-    for i in range(len(x_vals)):
-        nx.append(x_vals[i])
-        ny.append(np.mean(y_vals[i : i + 50]))
-    return nx, ny
-
-
 plt.plot(*smooth(train_loss), label="train")
-plt.plot(*loader.list_to_xy(val_loss), label="val")
+plt.plot(*list_to_xy(val_loss), label="val")
 plt.legend()
 plt.show()

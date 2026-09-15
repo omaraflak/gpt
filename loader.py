@@ -1,37 +1,45 @@
 import os
-import math
-from typing import Callable
-import jax
-import gzip
+import epubs
+import tarfile
 import urllib.request
-import jax.numpy as jnp
-import pickle
 
 
-def chunk_tokens_for_llm(
-    tokens: list[int], seq: int = 32, num_samples: int = 0, stride_factor: int = 2
-) -> tuple[jax.Array, jax.Array]:
-    data = jnp.array(tokens, dtype=jnp.int32)
-    step = seq // stride_factor
-    total_possible = (len(data) - seq) // step
-    n = min(num_samples, total_possible) if num_samples else total_possible
-    x_train = jnp.stack([data[i * step : i * step + seq] for i in range(n)])
-    y_train = jnp.stack([data[i * step + 1 : i * step + seq + 1] for i in range(n)])
-    return x_train, y_train
+def download_french_literature(max_books: int = -1) -> str:
+    url = "https://huggingface.co/datasets/laion/Project-Gutenberg/resolve/main/french_epub.tar.gz"
+    txt_path = "data/french_literature.txt"
+    if os.path.exists(txt_path):
+        with open(txt_path, "r", encoding="utf-8") as f:
+            return f.read()
 
+    tar_path = "data/french_epub.tar.gz"
+    if not os.path.exists(tar_path):
+        os.makedirs("data", exist_ok=True)
+        print(f"Downloading {url} to {tar_path}...")
+        urllib.request.urlretrieve(url, tar_path)
 
-def list_to_xy(values: list[float]) -> tuple[float, float]:
-    x, y = [], []
-    for i, v in enumerate(values):
-        if not math.isnan(v):
-            x.append(i)
-            y.append(v)
-    return x, y
+    books_count = 0
+    with open(txt_path, "w", encoding="utf-8") as out_f:
+        with tarfile.open(tar_path, "r:gz") as tar:
+            for member in tar:
+                if not (member.isfile() and member.name.endswith(".epub")):
+                    continue
+                try:
+                    f_obj = tar.extractfile(member)
+                    if f_obj is None:
+                        continue
+                    book_text = epubs.extract_text(f_obj.read())
+                    if book_text:
+                        if books_count > 0:
+                            out_f.write("\n\n")
+                        out_f.write(book_text)
+                        books_count += 1
+                        if books_count % 250 == 0:
+                            print(f"Extracted {books_count} books...", flush=True)
+                        if max_books > 0 and books_count == max_books:
+                            break
+                except Exception:
+                    continue
 
-
-def files_to_str(files: list[str]) -> str:
-    text = ""
-    for file in files:
-        with open(file, "r") as f:
-            text += f.read()
-    return text
+    print(f"Finished extracting {books_count} books to {txt_path}.")
+    with open(txt_path, "r", encoding="utf-8") as f:
+        return f.read()
