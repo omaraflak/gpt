@@ -1,4 +1,5 @@
 import jax
+import math
 import jax.numpy as jnp
 from dataclasses import dataclass
 from typing import Callable, Union
@@ -29,6 +30,12 @@ def mod(f):
     return fun
 
 
+def _split(key: jax.Array | None, n: int) -> list:
+    if key is None:
+        return [None] * n
+    return list(jax.random.split(key, n))
+
+
 def make(f) -> Module:
     value = getattr(make, "instances", 0) + 1
     setattr(make, "instances", value)
@@ -37,7 +44,7 @@ def make(f) -> Module:
     def init(key):
         return {}
 
-    def apply(params, x):
+    def apply(params, x, key=None):
         return f(x)
 
     return Module(name, init, apply)
@@ -52,9 +59,9 @@ def Sequence(modules: list[Module]):
             params[mod.name] = mod.init(subkey)
         return params
 
-    def apply(params, x):
-        for mod in modules:
-            x = mod.apply(params[mod.name], x)
+    def apply(params, x, key=None):
+        for mod, subkey in zip(modules, _split(key, len(modules))):
+            x = mod.apply(params[mod.name], x, subkey)
         return x
 
     return init, apply
@@ -70,8 +77,24 @@ def Linear(in_dim: int, out_dim: int):
             "b": jnp.zeros((out_dim,)),
         }
 
-    def apply(params, x):
+    def apply(params, x, key=None):
         return x @ params["w"].T + params["b"]
+
+    return init, apply
+
+
+@mod
+def Dropout(p: float):
+    keep_prob = 1.0 - p
+
+    def init(key):
+        return {}
+
+    def apply(params, x, key=None):
+        if p <= 0.0 or key is None:
+            return x
+        mask = jax.random.bernoulli(key, p=keep_prob, shape=x.shape)
+        return jnp.where(mask, x / keep_prob, 0.0)
 
     return init, apply
 
@@ -84,7 +107,7 @@ def LayerNorm(shape: tuple[int, ...]):
             "beta": jnp.zeros(shape),
         }
 
-    def apply(params, x):
+    def apply(params, x, key=None):
         eps = 1e-5
         reduction_axes = tuple(range(-len(shape), 0))
         mu = jnp.mean(x, axis=reduction_axes, keepdims=True)
@@ -100,7 +123,7 @@ def RMSNorm(shape: tuple[int, ...]):
     def init(key):
         return {"alpha": jnp.ones(shape)}
 
-    def apply(params, x):
+    def apply(params, x, key=None):
         eps = 1e-5
         rms = jnp.sqrt(jnp.mean(x**2, axis=-1, keepdims=True) + eps)
         return (x / rms) * params["alpha"]
@@ -121,7 +144,7 @@ def Attention(embed: int, dim: int):
         }
 
     # (T, C) -> (T, dk)
-    def apply(params, x):
+    def apply(params, x, key=None):
         # sequence length
         t = x.shape[0]
         # (T, C) @ (C, dk) -> (T, dk)
@@ -158,7 +181,7 @@ def MultiHeadAttention(heads: int, embed: int, dim: int):
         return params
 
     # (T, C) -> (T, C)
-    def apply(params, x):
+    def apply(params, x, key=None):
         x_hat = norm.apply(params[norm.name], x)
         # (T, dk)
         outs = [att.apply(params[att.name], x_hat) for att in attentions]
@@ -178,7 +201,7 @@ def SwiGLU(dim: int):
         k1, k2 = jax.random.split(key)
         return {linear1.name: linear1.init(k1), linear2.name: linear2.init(k2)}
 
-    def apply(params, x):
+    def apply(params, x, key=None):
         o1 = linear1.apply(params[linear1.name], x)
         o2 = linear2.apply(params[linear2.name], x)
         return o1 * jax.nn.sigmoid(o1) * o2
@@ -187,39 +210,43 @@ def SwiGLU(dim: int):
 
 
 @mod
-def MLP(embed: int):
+def MLP(embed: int, dropout: float):
     hidden = int(8 / 3 * embed)
     w_gate = Linear(embed, hidden)
     w_up = Linear(embed, hidden)
     w_down = Linear(hidden, embed)
     norm = RMSNorm((embed,))
+    dout = Dropout(dropout)
 
     def init(key):
-        k1, k2, k3, k4 = jax.random.split(key, 4)
+        k1, k2, k3, k4, k5 = jax.random.split(key, 5)
         return {
             w_gate.name: w_gate.init(k1),
             w_up.name: w_up.init(k2),
             w_down.name: w_down.init(k3),
             norm.name: norm.init(k4),
+            # Holds no parameters, but apply() looks it up by name.
+            dout.name: dout.init(k5),
         }
 
     # (T, C) -> (T, C)
-    def apply(params, x):
+    def apply(params, x, key=None):
         x_norm = norm.apply(params[norm.name], x)
         gate = jax.nn.silu(w_gate.apply(params[w_gate.name], x_norm))
         up = w_up.apply(params[w_up.name], x_norm)
         down = w_down.apply(params[w_down.name], gate * up)
-        return x + down
+        out = dout.apply(params[dout.name], down, key)
+        return x + out
 
     return init, apply
 
 
 @mod
-def TransformerBlock(size: int, heads: int, embed: int, dim: int):
+def TransformerBlock(size: int, heads: int, embed: int, dim: int, dropout: float):
     modules = []
     for _ in range(size):
         modules.append(MultiHeadAttention(heads, embed, dim))
-        modules.append(MLP(embed))
+        modules.append(MLP(embed, dropout))
 
     def init(key):
         params = dict()
@@ -229,9 +256,9 @@ def TransformerBlock(size: int, heads: int, embed: int, dim: int):
         return params
 
     # (T, C) -> (T, C)
-    def apply(params, x):
-        for m in modules:
-            x = m.apply(params[m.name], x)
+    def apply(params, x, key=None):
+        for m, subkey in zip(modules, _split(key, len(modules))):
+            x = m.apply(params[m.name], x, subkey)
         return x
 
     return init, apply
@@ -249,29 +276,35 @@ def Embeddings(vocab: int, embed: int, seq: int):
         }
 
     # (T,) -> (T, C)
-    def apply(params, x):
+    def apply(params, x, key=None):
         return params["we"][x] + params["wp"][: x.shape[0]]
 
     return init, apply
 
 
 @mod
-def GPT(num_layers: int, heads: int, seq: int, embed: int, vocab: int):
+def GPT(num_layers: int, heads: int, seq: int, embed: int, vocab: int, dropout: float):
     dim = embed // heads
+    emb = Embeddings(vocab, embed, seq)
+    head = Linear(embed, vocab)
     model = Sequence(
         [
-            Embeddings(vocab, embed, seq),
-            TransformerBlock(num_layers, heads, embed, dim),
+            emb,
+            TransformerBlock(num_layers, heads, embed, dim, dropout),
             RMSNorm((embed,)),
-            Linear(embed, vocab),
+            head,
         ]
     )
 
     def init(key):
-        return {model.name: model.init(key)}
+        params = model.init(key)
+        params[head.name] = {"b": params[head.name]["b"]}
+        return {model.name: params}
 
-    def apply(params, x):
-        return model.apply(params[model.name], x)
+    def apply(params, x, key=None):
+        p = params[model.name]
+        p = {**p, head.name: {"w": p[emb.name]["we"], "b": p[head.name]["b"]}}
+        return model.apply(p, x, key)
 
     return init, apply
 
@@ -289,12 +322,14 @@ def train(
     batch_size: int = 64,
     print_every: int = 100,
     shuffle: bool = True,
+    chars_per_token: float | None = None,
     rng_key: jax.Array = jax.random.key(0),
     checkpoint_callback: Callable[[Params, int, float], None] | None = None,
 ):
     x_data = jnp.asarray(x_data)
     y_data = jnp.asarray(y_data)
     num_samples = len(x_data)
+    bpc_scale = 1.0 / (chars_per_token * math.log(2)) if chars_per_token else None
 
     if 0.0 < train_val_split < 1.0 and num_samples >= 10:
         if shuffle:
@@ -330,15 +365,21 @@ def train(
         base = jnp.arange(used_samples).reshape(num_batches, batch_size)
         batch_indices = jnp.tile(base, (epochs, 1))
 
-    def _loss_fn(p, b_idx):
+    # One dropout key per step, carried through the scan. Each is split into
+    # batch_size sub-keys so every example gets an independent mask.
+    # fold_in (rather than another split of rng_key) keeps this stream
+    # independent of the shuffle keys derived above.
+    step_keys = jax.random.split(jax.random.fold_in(rng_key, 0xD0), total_steps)
+
+    def _loss_fn(p, b_idx, key):
         xb = x_train[b_idx]
         yb = y_train[b_idx]
-        return loss_fn(apply(p, xb), yb)
+        return loss_fn(apply(p, xb, jax.random.split(key, batch_size)), yb)
 
     def _update_step(state, step_input):
         p, opt_s, best_v_loss = state
-        step, b_idx = step_input
-        train_loss, grads = jax.value_and_grad(_loss_fn)(p, b_idx)
+        step, b_idx, step_key = step_input
+        train_loss, grads = jax.value_and_grad(_loss_fn)(p, b_idx, step_key)
 
         # Global gradient norm clipping (1.0)
         total_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in jax.tree.leaves(grads)))
@@ -348,14 +389,27 @@ def train(
         p, opt_s = optimizer.update(p, grads, opt_s, step)
 
         if print_every > 0:
+
+            def _print_train():
+                if bpc_scale is None:
+                    jax.debug.print(
+                        "[{step}/{total_steps}] loss: {loss:.7f}",
+                        step=step + 1,
+                        total_steps=total_steps,
+                        loss=train_loss,
+                    )
+                else:
+                    jax.debug.print(
+                        "[{step}/{total_steps}] loss: {loss:.7f} ({bpc:.4f} bpc)",
+                        step=step + 1,
+                        total_steps=total_steps,
+                        loss=train_loss,
+                        bpc=train_loss * bpc_scale,
+                    )
+
             jax.lax.cond(
                 (step + 1) % print_every == 0,
-                lambda: jax.debug.print(
-                    "[{step}/{total_steps}] loss: {loss:.7f}",
-                    step=step + 1,
-                    total_steps=total_steps,
-                    loss=train_loss,
-                ),
+                _print_train,
                 lambda: None,
             )
 
@@ -367,13 +421,22 @@ def train(
             def _val():
                 val_sub_x = x_val[:256]
                 val_sub_y = y_val[:256]
-                v_loss = loss_fn(apply(p, val_sub_x), val_sub_y)
-                jax.debug.print(
-                    "[{step}/{total_steps}] val_loss: {v_loss:.7f}",
-                    step=step + 1,
-                    total_steps=total_steps,
-                    v_loss=v_loss,
-                )
+                v_loss = loss_fn(apply(p, val_sub_x, None), val_sub_y)
+                if bpc_scale is None:
+                    jax.debug.print(
+                        "[{step}/{total_steps}] val_loss: {v_loss:.7f}",
+                        step=step + 1,
+                        total_steps=total_steps,
+                        v_loss=v_loss,
+                    )
+                else:
+                    jax.debug.print(
+                        "[{step}/{total_steps}] val_loss: {v_loss:.7f} ({bpc:.4f} bpc)",
+                        step=step + 1,
+                        total_steps=total_steps,
+                        v_loss=v_loss,
+                        bpc=v_loss * bpc_scale,
+                    )
                 return v_loss
 
             val_loss = jax.lax.cond(
@@ -401,7 +464,7 @@ def train(
         return jax.lax.scan(
             _update_step,
             (p, s, jnp.float32(float("inf"))),
-            xs=(jnp.arange(total_steps), batch_indices),
+            xs=(jnp.arange(total_steps), batch_indices, step_keys),
         )
 
     opt_state = optimizer.init(params)

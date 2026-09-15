@@ -19,9 +19,10 @@ seq = config["seq"]
 embed = config["embed"]
 vocab = config["vocab"]
 params = config["params"]
+dropout = 0
 
 tokenizer = tk.BPETokenizer.load(tokenizer_path)
-model = modules.GPT(num_layers, heads, seq, embed, vocab)
+model = modules.GPT(num_layers, heads, seq, embed, vocab, dropout)
 
 
 def generate(

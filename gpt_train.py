@@ -13,8 +13,9 @@ num_layers = 6
 heads = 4
 seq = 256
 embed = 256
-epochs = 3
-target_vocab = 1000
+epochs = 10
+dropout = 0.1
+target_vocab = 4000
 
 date = datetime.datetime.now().strftime("%y%m%d_%H%M")
 model_dir = f"checkpoints/{date}"
@@ -27,6 +28,11 @@ corpus = loader.files_to_str(
         "data/93.txt",
         "data/lhommequirit.txt",
         "data/dernierjour.txt",
+        "data/contemplateurdelamer.txt",
+        "data/contemplations.txt",
+        "data/hernani.txt",
+        "data/legende.txt",
+        "data/ruyblas.txt",
         "data/hugo_qa.txt",
     ]
 )
@@ -35,21 +41,20 @@ tokenizer = tk.BPETokenizer.create(corpus, vocab_size=target_vocab)
 tokenizer.save(f"{model_dir}/tokenizer.pkl")
 vocab = tokenizer.vocab_size
 
-x_train, y_train = loader.chunk_tokens_for_llm(
-    tokenizer.encode(corpus), seq, stride_factor=2
-)
+corpus_tokens = tokenizer.encode(corpus)
+chars_per_token = len(tk.BPETokenizer.normalize(corpus)) / len(corpus_tokens)
+x_train, y_train = loader.chunk_tokens_for_llm(corpus_tokens, seq, stride_factor=2)
 
-model = modules.GPT(num_layers, heads, seq, embed, vocab)
-# params = model.init(jax.random.key(42))
-with open("checkpoints/260915_0758/config_s100.pkl", "rb") as f:
-    params = pickle.load(f)["params"]
-apply = jax.vmap(model.apply, in_axes=(None, 0))
+model = modules.GPT(num_layers, heads, seq, embed, vocab, dropout)
+params = model.init(jax.random.key(42))
+apply = jax.vmap(model.apply, in_axes=(None, 0, 0))
 num_params = sum(x.size for x in jax.tree.leaves(params))
 
-print(
-    f"Training {num_params} parameters on {len(x_train)} sequences of length {seq}..."
-)
-
+print("Number of parameters:", num_params)
+print("Corpus tokens:", len(corpus_tokens))
+print("Chars per token:", chars_per_token)
+print("Parameters per token:", num_params / len(corpus_tokens))
+print("Number of training examples:", len(x_train))
 
 def on_checkpoint(new_params, step: int, val_loss: float):
     ckpt_config = {
@@ -67,27 +72,16 @@ def on_checkpoint(new_params, step: int, val_loss: float):
 
 batch_size = 64
 total_steps = epochs * int(len(x_train) * 0.9 // batch_size)
-# warmup_steps = min(100, total_steps // 10)
-warmup_steps = 0
+warmup_steps = min(100, total_steps // 10)
 optimizer = optimizers.adam(
-    lr=1e-5,
+    lr=1e-3,
     beta1=0.9,
     beta2=0.95,
     warmup_steps=warmup_steps,
     total_steps=total_steps,
-    min_lr=1e-6,
-    weight_decay=0.001,
+    min_lr=1e-4,
+    weight_decay=0.01,
 )
-
-# optimizer = optimizers.adam(
-#     lr=1e-3,
-#     beta1=0.9,
-#     beta2=0.95,
-#     warmup_steps=warmup_steps,
-#     total_steps=total_steps,
-#     min_lr=1e-4,
-#     weight_decay=0.01,
-# )
 
 params, train_loss, val_loss = modules.train(
     params,
@@ -98,9 +92,10 @@ params, train_loss, val_loss = modules.train(
     y_train,
     epochs,
     train_val_split=0.9,
-    run_val_every=25,
+    run_val_every=50,
     batch_size=batch_size,
     print_every=25,
+    chars_per_token=chars_per_token,
     checkpoint_callback=on_checkpoint,
 )
 
