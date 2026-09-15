@@ -34,12 +34,10 @@ def generate(
     tokens = tokenizer.encode(prompt)
     yield tokenizer.decode(list(tokens))
 
-    stop_tokens = tokenizer.encode(stop) if stop else []
-    generated: list[int] = []
-
     window = tokens[-seq:]
     n = len(window)
     curr = jnp.zeros((seq,), dtype=jnp.int32).at[:n].set(jnp.array(window))
+    stop_tokens = jnp.array(tokenizer.encode(stop) if stop else [])
 
     for _ in range(length):
         rng_key, subkey = jax.random.split(rng_key)
@@ -50,15 +48,15 @@ def generate(
             next_tok = int(jnp.argmax(logits))
 
         yield tokenizer.decode([next_tok])
-        generated.append(next_tok)
-        if stop_tokens and generated[-len(stop_tokens) :] == stop_tokens:
-            return
 
         if n < seq:
             curr = curr.at[n].set(next_tok)
             n += 1
         else:
             curr = jnp.concatenate([curr[1:], jnp.array([next_tok], dtype=jnp.int32)])
+
+        if jnp.array_equal(curr[n - len(stop_tokens) : n], stop_tokens):
+            return
 
 
 for x in generate(
