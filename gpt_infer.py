@@ -7,8 +7,9 @@ import pickle
 import tokenizer as tk
 
 # checkpoints
-config_path = "checkpoints/260915_1352/config_s1280.pkl"
-tokenizer_path = "checkpoints/260915_1352/tokenizer.pkl"
+# config_path = "checkpoints/260915_1806/config_s11776.pkl"
+config_path = "checkpoints/260915_1806/config_sft_s144.pkl"
+tokenizer_path = "checkpoints/260915_1806/tokenizer.pkl"
 
 with open(config_path, "rb") as f:
     config = pickle.load(f)
@@ -56,14 +57,15 @@ def generate(
         else:
             curr = jnp.concatenate([curr[1:], jnp.array([next_tok], dtype=jnp.int32)])
 
-        if jnp.array_equal(curr[n - len(stop_tokens) : n], stop_tokens):
+        if stop and jnp.array_equal(curr[n - len(stop_tokens) : n], stop_tokens):
             return
 
 
+question = "Comment etre heureux?"
 for x in generate(
-    "<|user|>\nQuel est le sens de la vie?\n<|end|>\n<|assistant|>\n",
-    length=1000,
-    temperature=0.7,
+    f"<|user|>\n{question}\n<|end|>\n<|assistant|>\n",
+    length=100,
+    temperature=0.3,
     stop="<|end|>",
 ):
     print(x, end="")

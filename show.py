@@ -4,26 +4,26 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def list_to_xy(values: list[float]) -> tuple[float, float]:
+def list_to_xy(values: list[float]) -> tuple[list[int], list[float]]:
     x, y = [], []
     for i, v in enumerate(values):
         if not math.isnan(v):
             x.append(i)
-            y.append(v)
+            y.append(float(v))
     return x, y
 
 
-def smooth(vals: list[float]):
+def smooth(vals: list[float]) -> tuple[list[int], list[float]]:
     x_vals, y_vals = list_to_xy(vals)
     nx, ny = [], []
     for i in range(len(x_vals)):
         nx.append(x_vals[i])
-        ny.append(np.mean(y_vals[i : i + 5]))
+        ny.append(float(np.mean(y_vals[i : i + 5])))
     return nx, ny
 
 
 paths = [
-    "checkpoints/260915_1114/losses.pkl",
+    "checkpoints/260915_1806/losses_sft.pkl",
 ]
 
 train_loss = []

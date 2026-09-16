@@ -10,42 +10,34 @@ import training
 import pickle
 import tokenizer as tk
 
-# config
-num_layers = 6
-heads = 4
-seq = 256
-embed = 256
-epochs = 3
-dropout = 0
-target_vocab = 4000
 
-date = datetime.datetime.now().strftime("%y%m%d_%H%M")
-model_dir = f"checkpoints/{date}"
-os.makedirs(model_dir, exist_ok=True)
+model_dir = "checkpoints/260915_1806"
+step = 11776
 
-corpus = loader.download_french_literature(max_books=300)
+with open(f"{model_dir}/config_s{step}.pkl", "rb") as f:
+    config = pickle.load(f)
 
-tokenizer = tk.BPETokenizer.create(corpus, vocab_size=target_vocab)
-tokenizer.save(f"{model_dir}/tokenizer.pkl")
-vocab = tokenizer.vocab_size
+num_layers = config["num_layers"]
+heads = config["heads"]
+seq = config["seq"]
+embed = config["embed"]
+vocab = config["vocab"]
+params = config["params"]
+dropout = 0.1
 
+with open("data/hugo_qa.txt", "r") as f:
+    corpus = f.read()
+
+tokenizer = tk.BPETokenizer.load(f"{model_dir}/tokenizer.pkl")
 corpus_tokens = tokenizer.encode(corpus)
 chars_per_token = len(tk.BPETokenizer.normalize(corpus)) / len(corpus_tokens)
 x_train, y_train, x_val, y_val = training.make_dataset(
-    corpus_tokens, seq, sequence_overlap=1, train_val_split=0.9, block_size=256
+    corpus_tokens, seq, sequence_overlap=2, train_val_split=0.9, block_size=4
 )
 
 model = modules.GPT(num_layers, heads, seq, embed, vocab, dropout)
-params = model.init(jax.random.key(42))
 apply = jax.vmap(model.apply, in_axes=(None, 0, 0))
-num_params = sum(x.size for x in jax.tree.leaves(params))
 
-print("Number of parameters:", num_params)
-print("Corpus tokens:", len(corpus_tokens))
-print("Chars per token:", chars_per_token)
-print("Parameters per token:", num_params / len(corpus_tokens))
-print("Number of training examples:", len(x_train))
-print("Number of validation examples:", len(x_val))
 
 def on_checkpoint(new_params, step: int, val_loss: float):
     ckpt_config = {
@@ -56,12 +48,12 @@ def on_checkpoint(new_params, step: int, val_loss: float):
         "num_layers": num_layers,
         "params": new_params,
     }
-    with open(f"{model_dir}/config_s{int(step)}.pkl", "wb") as f:
+    with open(f"{model_dir}/config_sft_s{int(step)}.pkl", "wb") as f:
         pickle.dump(ckpt_config, f)
-    print(f"--> Saved best model at step {int(step)} (val_loss: {float(val_loss):.4f})")
 
 
-batch_size = 64
+epochs = 3
+batch_size = 1
 total_steps = epochs * (len(x_train) // batch_size)
 warmup_steps = min(100, total_steps // 10)
 params, train_loss, val_loss = training.train(
@@ -69,12 +61,12 @@ params, train_loss, val_loss = training.train(
     apply,
     losses.cross_entropy_logits,
     optimizers.adam(
-        lr=1e-3,
+        lr=1e-4,
         beta1=0.9,
         beta2=0.95,
         warmup_steps=warmup_steps,
         total_steps=total_steps,
-        min_lr=1e-4,
+        min_lr=1e-5,
         weight_decay=0.01,
     ),
     x_train,
@@ -90,5 +82,5 @@ params, train_loss, val_loss = training.train(
 )
 
 losses = {"train_loss": train_loss, "val_loss": val_loss}
-with open(f"{model_dir}/losses.pkl", "wb") as f:
+with open(f"{model_dir}/losses_sft.pkl", "wb") as f:
     pickle.dump(losses, f)
