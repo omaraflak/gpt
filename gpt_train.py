@@ -11,10 +11,10 @@ import pickle
 import tokenizer as tk
 
 # config
-num_layers = 6
+num_layers = 8
 heads = 4
 seq = 256
-embed = 256
+embed = 384
 epochs = 3
 dropout = 0
 target_vocab = 4000
@@ -32,7 +32,7 @@ vocab = tokenizer.vocab_size
 corpus_tokens = tokenizer.encode(corpus)
 chars_per_token = len(tk.BPETokenizer.normalize(corpus)) / len(corpus_tokens)
 x_train, y_train, x_val, y_val = training.make_dataset(
-    corpus_tokens, seq, sequence_overlap=1, train_val_split=0.9, block_size=256
+    corpus_tokens, seq, sequence_overlap=2, train_val_split=0.9, block_size=256
 )
 
 model = modules.GPT(num_layers, heads, seq, embed, vocab, dropout)
@@ -47,7 +47,8 @@ print("Parameters per token:", num_params / len(corpus_tokens))
 print("Number of training examples:", len(x_train))
 print("Number of validation examples:", len(x_val))
 
-def on_checkpoint(new_params, step: int, val_loss: float):
+
+def on_checkpoint(new_params, opt_state, step: int, val_loss: float):
     ckpt_config = {
         "seq": seq,
         "vocab": vocab,
@@ -55,26 +56,27 @@ def on_checkpoint(new_params, step: int, val_loss: float):
         "heads": heads,
         "num_layers": num_layers,
         "params": new_params,
+        "opt_state": opt_state,
     }
     with open(f"{model_dir}/config_s{int(step)}.pkl", "wb") as f:
         pickle.dump(ckpt_config, f)
-    print(f"--> Saved best model at step {int(step)} (val_loss: {float(val_loss):.4f})")
+    print("[saved model]")
 
 
 batch_size = 64
 total_steps = epochs * (len(x_train) // batch_size)
 warmup_steps = min(100, total_steps // 10)
-params, train_loss, val_loss = training.train(
+params, opt_state, train_loss, val_loss = training.train(
     params,
     apply,
     losses.cross_entropy_logits,
     optimizers.adam(
-        lr=1e-3,
+        lr=3e-4,
         beta1=0.9,
         beta2=0.95,
         warmup_steps=warmup_steps,
         total_steps=total_steps,
-        min_lr=1e-4,
+        min_lr=1e-5,
         weight_decay=0.01,
     ),
     x_train,
@@ -86,6 +88,8 @@ params, train_loss, val_loss = training.train(
     batch_size=batch_size,
     print_every=2 * batch_size,
     chars_per_token=chars_per_token,
+    opt_state=opt_state,
+    rng_key=jax.random.key(1),
     checkpoint_callback=on_checkpoint,
 )
 

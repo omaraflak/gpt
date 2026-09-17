@@ -25,7 +25,6 @@ def make_dataset(
     sequence_overlap: int = 2,
     train_val_split: float = 0.9,
     block_size: int = 256,
-    shuffle: bool = True,
     rng_key: jax.Array = jax.random.key(0),
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     # 1. break corpus into blocks
@@ -34,10 +33,11 @@ def make_dataset(
     block_size = len(data) // num_blocks
     blocks = data[: num_blocks * block_size].reshape(num_blocks, block_size)
 
-    # 2. shuffle blocks
-    if shuffle:
-        perm = jax.random.permutation(rng_key, num_blocks)
-        blocks = blocks[perm]
+    # 2. shuffle blocks so train/val both draw from across the whole corpus
+    perm = jax.random.permutation(rng_key, num_blocks)
+    blocks = blocks[perm]
+    val_key = jax.random.fold_in(rng_key, 1)
+    train_key = jax.random.fold_in(rng_key, 2)
 
     # 3. split blocks in train / val groups
     split_idx = int(num_blocks * train_val_split)
@@ -59,6 +59,15 @@ def make_dataset(
     x_val = x_val.reshape(-1, sequence_size)
     y_val = y_val.reshape(-1, sequence_size)
 
+    # 5. reshape and shuffle pairs
+    train_perm = jax.random.permutation(train_key, len(x_train))
+    x_train = x_train[train_perm]
+    y_train = y_train[train_perm]
+
+    val_perm = jax.random.permutation(val_key, len(x_val))
+    x_val = x_val[val_perm]
+    y_val = y_val[val_perm]
+
     return x_train, y_train, x_val, y_val
 
 
@@ -75,8 +84,11 @@ def train(
     run_val_every: int = 128,
     batch_size: int = 64,
     print_every: int = 100,
+    val_samples: int = 256,
     shuffle: bool = True,
     chars_per_token: float | None = None,
+    opt_state=None,
+    start_step: int = 0,
     rng_key: jax.Array = jax.random.key(0),
     checkpoint_callback: Callable[[Params, int, float], None] | None = None,
 ):
@@ -124,7 +136,7 @@ def train(
         clip_coef = jnp.minimum(1.0, 1.0 / (total_norm + 1e-6))
         grads = jax.tree.map(lambda g: g * clip_coef, grads)
 
-        p, opt_s = optimizer.update(p, grads, opt_s, step)
+        p, opt_s = optimizer.update(p, grads, opt_s, step + start_step)
 
         if print_every > 0:
 
@@ -157,8 +169,8 @@ def train(
             is_val_step = (step + 1) % run_val_every == 0
 
             def _val():
-                val_sub_x = x_val[:256]
-                val_sub_y = y_val[:256]
+                val_sub_x = x_val[:val_samples]
+                val_sub_y = y_val[:val_samples]
                 v_loss = loss_fn(model_fn(p, val_sub_x, None), val_sub_y)
                 if bpc_scale is None:
                     jax.debug.print(
@@ -190,7 +202,7 @@ def train(
                 jax.lax.cond(
                     improved,
                     lambda: jax.debug.callback(
-                        checkpoint_callback, p, step + 1, val_loss
+                        checkpoint_callback, p, opt_s, step + 1, val_loss
                     ),
                     lambda: None,
                 )
@@ -205,6 +217,8 @@ def train(
             xs=(jnp.arange(total_steps), batch_indices, step_keys),
         )
 
-    opt_state = optimizer.init(params)
-    (final_params, _, _), (train_loss, val_loss) = _run_scan(params, opt_state)
-    return final_params, train_loss, val_loss
+    opt_state = optimizer.init(params) if opt_state is None else opt_state
+    (final_params, final_opt_state, _), (train_loss, val_loss) = _run_scan(
+        params, opt_state
+    )
+    return final_params, final_opt_state, train_loss, val_loss

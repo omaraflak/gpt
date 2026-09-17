@@ -56,7 +56,7 @@ epochs = 3
 batch_size = 1
 total_steps = epochs * (len(x_train) // batch_size)
 warmup_steps = min(100, total_steps // 10)
-params, train_loss, val_loss = training.train(
+params, opt_state, train_loss, val_loss = training.train(
     params,
     apply,
     losses.cross_entropy_logits,

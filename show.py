@@ -23,7 +23,7 @@ def smooth(vals: list[float]) -> tuple[list[int], list[float]]:
 
 
 paths = [
-    "checkpoints/260915_1806/losses_sft.pkl",
+    "checkpoints/260916_1451/losses.pkl",
 ]
 
 train_loss = []

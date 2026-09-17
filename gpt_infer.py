@@ -7,9 +7,8 @@ import pickle
 import tokenizer as tk
 
 # checkpoints
-# config_path = "checkpoints/260915_1806/config_s11776.pkl"
-config_path = "checkpoints/260915_1806/config_sft_s144.pkl"
-tokenizer_path = "checkpoints/260915_1806/tokenizer.pkl"
+config_path = "checkpoints/260917_0846/config_s768.pkl"
+tokenizer_path = "checkpoints/260917_0846/tokenizer.pkl"
 
 with open(config_path, "rb") as f:
     config = pickle.load(f)
@@ -28,8 +27,8 @@ model = modules.GPT(num_layers, heads, seq, embed, vocab, dropout)
 
 def generate(
     prompt: str,
-    length: int = 150,
-    temperature: float = 0.8,
+    length: int,
+    temperature: float,
     stop: str | None = None,
     rng_key: jax.Array = jax.random.key(42),
 ):
@@ -61,12 +60,10 @@ def generate(
             return
 
 
-question = "Comment etre heureux?"
 for x in generate(
-    f"<|user|>\n{question}\n<|end|>\n<|assistant|>\n",
+    "Je suis ",
     length=100,
     temperature=0.3,
-    stop="<|end|>",
 ):
     print(x, end="")
     sys.stdout.flush()
